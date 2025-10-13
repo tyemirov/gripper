@@ -35,7 +35,7 @@ jobs:
         run: go test ./...
 
   build:
-    name: Build Cross-Platform Binaries
+    name: Build Unix Binaries
     needs: tests
     runs-on: ubuntu-latest
     strategy:
@@ -47,9 +47,6 @@ jobs:
           - goos: darwin
             goarch: amd64
             ext: ''
-          - goos: windows
-            goarch: amd64
-            ext: '.exe'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

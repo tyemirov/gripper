@@ -2,7 +2,7 @@
 
 `gripper` is a small and uncompromising utility: it runs a command and guarantees that **after N seconds** the command, all its children, and all associated resources (open files, sockets, subprocesses) are terminated.
 
-Think of it as a **grim reaper with precision timing** — reliable, cross-platform, and strict.
+Think of it as a **grim reaper with precision timing** — reliable on Unix-like platforms and strict.
 
 ---
 
@@ -13,10 +13,11 @@ Most timeouts in shells, CI systems, or programming libraries are _advisory_: th
 `gripper` is different:
 
 - **Hard guarantee:** after `N` seconds, the command is gone. Not “maybe gone,” not “cleaned up later.”
-- **Cross-platform:**
+- **Supported platforms:**
 
   - **Linux:** Uses cgroup v2 `cgroup.kill` when available (atomic kill).
   - **macOS:** Uses BSD `kqueue` process tracking to follow forks/execs.
+  - **Windows:** Not supported. The process control mechanisms required by `gripper` are not available on Windows today.
 
 - **Fast enforcement:** grace time is internal and capped at 1 second. At most, there’s a one-second window between timeout and full termination.
 
@@ -83,7 +84,7 @@ The binary `gripper` will be in your `$GOPATH/bin` or `$HOME/go/bin`.
 
 - Run the full validation suite locally with `go fmt ./... && go vet ./... && go test ./...`.
 - Integration tests live under `internal/tests/integration` and exercise real process trees, including timeout enforcement and descendant cleanup.
-- Continuous integration runs on GitHub Actions (`.github/workflows/ci.yml`) and cross-compiles binaries for Linux, macOS, and Windows in addition to enforcing formatting, vetting, and tests.
+- Continuous integration runs on GitHub Actions (`.github/workflows/ci.yml`) and cross-compiles binaries for Linux and macOS in addition to enforcing formatting, vetting, and tests.
 
 ---
 
