@@ -33,16 +33,12 @@ const (
 	logMessageTrackerCloseDelayed = "mac tracker close did not complete before deadline"
 )
 
-type loggerBuilder interface {
-	Build() (*zap.Logger, error)
-}
-
 type timerBuilder interface {
 	NewTimer(d time.Duration) *time.Timer
 }
 
 type executionEngine struct {
-	loggerFactory      loggerBuilder
+	loggerFactory      LoggerFactory
 	timerFactory       timerBuilder
 	macTrackerFactory  MacTrackerFactory
 	macTrackingEnabled bool
@@ -53,6 +49,11 @@ type executionEngine struct {
 type zapLoggerFactory struct{}
 
 type systemTimerFactory struct{}
+
+// LoggerFactory constructs zap loggers for the executor.
+type LoggerFactory interface {
+	Build() (*zap.Logger, error)
+}
 
 // MacTrackerFactory constructs macOS process trackers.
 type MacTrackerFactory interface {
@@ -85,6 +86,13 @@ func WithMacTrackerFactory(factory MacTrackerFactory) ExecutorOption {
 	return func(engine *executionEngine) {
 		engine.macTrackerFactory = factory
 		engine.macTrackingEnabled = true
+	}
+}
+
+// WithLoggerFactory overrides the logger factory used by the executor.
+func WithLoggerFactory(factory LoggerFactory) ExecutorOption {
+	return func(engine *executionEngine) {
+		engine.loggerFactory = factory
 	}
 }
 
@@ -273,6 +281,10 @@ func (manager *executionManager) configureMacTracker(childPid int) {
 		return
 	}
 	if err := manager.macTracker.StartTrackingRoot(childPid); err != nil {
+		if proctrack.IsTrackingUnsupported(err) {
+			manager.shutdownMacTracker()
+			return
+		}
 		manager.logger.Error(logMessageTrackerStartFailed, zap.Error(err))
 		manager.shutdownMacTracker()
 	}
