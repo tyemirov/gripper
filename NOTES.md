@@ -79,12 +79,12 @@ Leave Features, BugFixes, Improvements, Maintenance sections empty when all fixe
 
 ### Improvements
 
-- [ ] [GR-01] Prepare a full suite of integration tests with 100% coverage of the code
-- [ ] [GR-03] Have complete GDoc code coverage
+- [X] [GR-01] Prepare a full suite of integration tests with 100% coverage of the code
+- [X] [GR-03] Have complete GDoc code coverage
 
 ### BugFixes
 
-- [ ] [GR-02] The program hangs when laucnhed on a trivial command.
+- [X] [GR-02] The program hangs when laucnhed on a trivial command.
 ```shell
 11:49:15 tyemirov@Vadyms-MacBook-Pro:~/Development/temirov/gripper - [master] $ go run ./... 10 -- ls -la
 {"level":"warn","ts":1760381358.564859,"caller":"runner/runner.go:120","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 55367: operation not supported"}

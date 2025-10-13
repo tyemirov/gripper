@@ -1,18 +1,8 @@
-// runner.go: core execution + enforcement
-//
-// Platform notes:
-//
-//	Linux: prefer cgroup v2 (cgroup.kill). Fallback: process group + /proc scan.
-//	macOS: kqueue tracker when available; fallback: process group + ps sweep.
-//
-// Enforcement semantics:
-//   - At exactly Timeout after start, we initiate termination.
-//   - From that instant, we bound all enforcement to EnforceWindow (1s). We send
-//     SIGTERM briefly, then SIGKILL, and perform a final sweep. We do not allow
-//     post-timeout handling to exceed 1s.
 package runner
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,274 +19,412 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type runContext struct {
-	Logger                 *zap.Logger
-	Options                Options
-	ChildPid               int
-	ChildExitStatusChannel chan int
-	CgroupPath             string
-	UsingCgroup            bool
-	MacTracker             proctrack.Tracker
+const (
+	linuxOSName                  = "linux"
+	darwinOSName                 = "darwin"
+	goroutineShutdownGrace       = 500 * time.Millisecond
+	enforcementPauseDuration     = 200 * time.Millisecond
+	scannerPollPeriod            = 150 * time.Millisecond
+	logMessageStartFailed        = "start failed"
+	logMessageCgroupCreateFailed = "cgroup create failed; falling back"
+	logMessageCgroupJoinFailed   = "failed moving pid into cgroup; falling back"
+	logMessageTrackerUnavailable = "kqueue tracker unavailable; falling back"
+	logMessageTrackerStartFailed = "kqueue tracker failed to start; continuing without it"
+	logMessageTimeoutEnforced    = "timeout reached; enforcing window"
+	logFieldEnforcementWindow    = "window"
+)
+
+type loggerBuilder interface {
+	Build() (*zap.Logger, error)
 }
 
+type timerBuilder interface {
+	NewTimer(d time.Duration) *time.Timer
+}
+
+type executionEngine struct {
+	loggerFactory loggerBuilder
+	timerFactory  timerBuilder
+	now           func() time.Time
+	sleep         func(time.Duration)
+}
+
+type zapLoggerFactory struct{}
+
+type systemTimerFactory struct{}
+
+// Executor exposes the configurable execution engine used by higher layers.
+type Executor struct {
+	engine executionEngine
+}
+
+func newExecutionEngine() executionEngine {
+	return executionEngine{
+		loggerFactory: zapLoggerFactory{},
+		timerFactory:  systemTimerFactory{},
+		now:           time.Now,
+		sleep:         time.Sleep,
+	}
+}
+
+// NewExecutor constructs an Executor with the default dependencies.
+func NewExecutor() Executor {
+	return Executor{engine: newExecutionEngine()}
+}
+
+// Run executes the configured command under a strict timeout and returns the
+// resulting exit code.
 func Run(options Options) (int, error) {
-	logger, loggerErr := zap.NewProduction()
+	return NewExecutor().Execute(context.Background(), options)
+}
+
+// Execute launches the command and enforces the timeout using the provided
+// context for cancellation.
+func (engine executionEngine) Execute(ctx context.Context, options Options) (int, error) {
+	if options.Timeout <= 0 {
+		return exitcodes.ExitInvalidUsage, fmt.Errorf("timeout must be > 0")
+	}
+	if len(options.CommandAndArgs) == 0 {
+		return exitcodes.ExitInvalidUsage, errors.New("command is required")
+	}
+
+	options.EnforceWindow = FixedEnforceWindow
+
+	logger, loggerErr := engine.loggerFactory.Build()
 	if loggerErr != nil {
 		return exitcodes.ExitRuntimeError, fmt.Errorf("logger: %w", loggerErr)
 	}
 	defer logger.Sync()
 
-	if options.Timeout <= 0 {
-		return exitcodes.ExitInvalidUsage, fmt.Errorf("timeout must be > 0")
-	}
-	// Enforce non-configurable 1s window.
-	options.EnforceWindow = FixedEnforceWindow
-
-	executableName := options.CommandAndArgs[0]
-	executableArgs := options.CommandAndArgs[1:]
-
-	var execCommand *exec.Cmd
-	if shouldUseShell(options.CommandAndArgs) {
-		userShell := pickUserShell()
-		// Build a safe command line for the shell.
-		cmdline := shellJoin(options.CommandAndArgs)
-		// Use login/interactive only if you *require* rc files; -lc covers aliases/functions in typical setups.
-		execCommand = exec.Command(userShell, "-lc", cmdline)
-	} else {
-		execCommand = exec.Command(executableName, executableArgs...)
+	manager := executionManager{
+		options:      options,
+		logger:       logger,
+		timerFactory: engine.timerFactory,
+		now:          engine.now,
+		sleep:        engine.sleep,
 	}
 
-	execCommand.Stdout = os.Stdout
-	execCommand.Stderr = os.Stderr
-	execCommand.Stdin = os.Stdin
-	execCommand.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return manager.run(ctx)
+}
 
-	ctx := &runContext{
-		Logger:                 logger,
-		Options:                options,
-		ChildExitStatusChannel: make(chan int, 1),
+// Execute launches the command through the encapsulated execution engine.
+func (executor Executor) Execute(ctx context.Context, options Options) (int, error) {
+	return executor.engine.Execute(ctx, options)
+}
+
+func (zapLoggerFactory) Build() (*zap.Logger, error) {
+	return zap.NewProduction()
+}
+
+func (systemTimerFactory) NewTimer(d time.Duration) *time.Timer {
+	return time.NewTimer(d)
+}
+
+type executionManager struct {
+	options        Options
+	logger         *zap.Logger
+	timerFactory   timerBuilder
+	now            func() time.Time
+	sleep          func(time.Duration)
+	command        *exec.Cmd
+	childExit      chan int
+	usingCgroup    bool
+	cgroupPath     string
+	macTracker     proctrack.Tracker
+	signalRoutine  goroutineCoordinator
+	scannerRoutine *goroutineCoordinator
+}
+
+func (manager *executionManager) run(ctx context.Context) (int, error) {
+	if err := manager.configureCommand(); err != nil {
+		return exitcodes.ExitRuntimeError, err
 	}
 
-	// Linux: set up cgroup v2 if available.
-	if runtime.GOOS == "linux" {
-		if available, _ := cgroup.Available(); available {
-			if pathValue, createErr := cgroup.CreateUnique(); createErr == nil {
-				ctx.CgroupPath = pathValue
-				ctx.UsingCgroup = true
-				defer cgroup.Remove(pathValue)
-			} else {
-				logger.Warn("cgroup create failed; falling back", zap.Error(createErr))
-			}
-		}
+	manager.preparePlatform()
+	defer manager.cleanupPlatform()
+
+	if err := manager.command.Start(); err != nil {
+		manager.logger.Error(logMessageStartFailed, zap.Error(err))
+		return exitcodes.ExitRuntimeError, err
 	}
 
-	// macOS: set up kqueue tracker if possible.
-	if runtime.GOOS == "darwin" {
-		if tracker, trackErr := proctrack.NewKqueueTracker(); trackErr == nil {
-			ctx.MacTracker = tracker
-			defer ctx.MacTracker.Close()
-		} else {
-			logger.Warn("kqueue tracker unavailable; falling back", zap.Error(trackErr))
-		}
-	}
+	childPid := manager.command.Process.Pid
 
-	if startErr := execCommand.Start(); startErr != nil {
-		ctx.Logger.Error("start failed", zap.Error(startErr))
-		return exitcodes.ExitRuntimeError, startErr
-	}
-	ctx.ChildPid = execCommand.Process.Pid
+	manager.configureCgroupMembership(childPid)
+	manager.configureMacTracker(childPid)
+	go manager.captureExitStatus()
 
-	// Place into cgroup when used.
-	if ctx.UsingCgroup {
-		if moveErr := cgroup.AddPid(ctx.CgroupPath, ctx.ChildPid); moveErr != nil {
-			ctx.Logger.Warn("failed moving pid into cgroup; falling back", zap.Error(moveErr))
-			ctx.UsingCgroup = false
-		}
-	}
+	manager.launchBackgroundRoutines(childPid)
+	defer manager.stopBackgroundRoutines()
 
-	// macOS tracker: start tracking root.
-	if ctx.MacTracker != nil {
-		if err := ctx.MacTracker.StartTrackingRoot(ctx.ChildPid); err != nil {
-			ctx.Logger.Warn("kqueue tracker failed to start; continuing without it", zap.Error(err))
-			ctx.MacTracker = nil
-		}
-	}
-
-	// Reap routine
-	go func() {
-		waitErr := execCommand.Wait()
-		if waitErr != nil {
-			if exitError, ok := waitErr.(*exec.ExitError); ok {
-				if status, ok := exitError.Sys().(syscall.WaitStatus); ok {
-					ctx.ChildExitStatusChannel <- status.ExitStatus()
-					return
-				}
-			}
-			ctx.ChildExitStatusChannel <- exitcodes.ExitRuntimeError
-			return
-		}
-		ctx.ChildExitStatusChannel <- exitcodes.ExitSuccess
-	}()
-
-	// Forward incoming signals to the job.
-	signalsStop := make(chan struct{})
-	signalsDone := make(chan struct{})
-	go signals.ForwardLoop(signals.ForwardConfig{
-		ChildPid:    ctx.ChildPid,
-		UsingCgroup: ctx.UsingCgroup,
-		CgroupPath:  ctx.CgroupPath,
-		Stop:        signalsStop,
-		Done:        signalsDone,
-	})
-
-	// Linux fallback scanner (non-cgroup)
-	var scannerStop chan struct{}
-	var scannerDone chan struct{}
-	if runtime.GOOS == "linux" && !ctx.UsingCgroup {
-		scannerStop = make(chan struct{})
-		scannerDone = make(chan struct{})
-		go procscan.ScannerLoop(procscan.ScannerConfig{
-			RootPid:    ctx.ChildPid,
-			PollPeriod: 150 * time.Millisecond,
-			Stop:       scannerStop,
-			Done:       scannerDone,
-		})
-	}
-
-	timeoutTimer := time.NewTimer(ctx.Options.Timeout)
+	timeoutTimer := manager.timerFactory.NewTimer(manager.options.Timeout)
 	defer timeoutTimer.Stop()
 
-	finalExitCode := exitcodes.ExitRuntimeError
-
 	select {
-	case code := <-ctx.ChildExitStatusChannel:
-		finalExitCode = code
-
+	case <-ctx.Done():
+		manager.terminateChildImmediately(childPid)
+		return exitcodes.ExitRuntimeError, ctx.Err()
+	case exitCode := <-manager.childExit:
+		return exitCode, nil
 	case <-timeoutTimer.C:
-		// Begin fixed 1s enforcement window.
-		enforcementDeadline := time.Now().Add(ctx.Options.EnforceWindow)
-		ctx.Logger.Warn("timeout reached; enforcing 1s window", zap.Duration("window", ctx.Options.EnforceWindow))
-
-		// 1) Gentle nudge: TERM, short pause (<= 200ms)
-		signalTERM(ctx)
-		sleepUntil(enforcementDeadline, 200*time.Millisecond)
-
-		// 2) Hard kill path
-		signalKILL(ctx)
-
-		// 3) Stop background helpers promptly
-		closeAndWait(signalsStop, signalsDone)
-		if scannerStop != nil {
-			closeAndWait(scannerStop, scannerDone)
-		}
-
-		// 4) Wait for the child to exit, but never exceed the 1s window.
-		remaining := time.Until(enforcementDeadline)
-		if remaining <= 0 {
-			finalExitCode = exitcodes.ExitTimeout
-		} else {
-			select {
-			case code := <-ctx.ChildExitStatusChannel:
-				finalExitCode = code
-			case <-time.After(remaining):
-				finalExitCode = exitcodes.ExitTimeout
-			}
-		}
-	}
-
-	// Normal shutdown (if not already closed)
-	closeAndWait(signalsStop, signalsDone)
-	if scannerStop != nil {
-		closeAndWait(scannerStop, scannerDone)
-	}
-
-	return finalExitCode, nil
-}
-
-func closeAndWait(stop chan struct{}, done chan struct{}) {
-	if stop == nil || done == nil {
-		return
-	}
-	// If it's already done, don't touch the stop channel.
-	select {
-	case <-done:
-		return
-	default:
-	}
-
-	// Signal the goroutine to stop.
-	close(stop)
-
-	// Wait for it to acknowledge, but don't block forever (avoid rare races where
-	// the goroutine hasn't started yet or is stuck in a syscall/select corner case).
-	select {
-	case <-done:
-		return
-	case <-time.After(500 * time.Millisecond):
-		// Best-effort shutdown; proceed to exit to avoid hangs.
-		return
+		manager.logger.Warn(logMessageTimeoutEnforced, zap.Duration(logFieldEnforcementWindow, manager.options.EnforceWindow))
+		exitCode := manager.enforceTimeout(childPid)
+		return exitCode, nil
 	}
 }
 
-func signalTERM(ctx *runContext) {
-	if ctx.UsingCgroup {
-		_ = cgroup.SignalAll(ctx.CgroupPath, unix.SIGTERM)
-		return
+func (manager *executionManager) configureCommand() error {
+	argv := manager.options.CommandAndArgs
+	if shouldUseShell(argv) {
+		shellPath := pickUserShell()
+		commandLine := shellJoin(argv)
+		manager.command = exec.Command(shellPath, "-lc", commandLine)
+	} else {
+		manager.command = exec.Command(argv[0], argv[1:]...)
 	}
-	if runtime.GOOS == "darwin" && ctx.MacTracker != nil {
-		_ = ctx.MacTracker.SignalAll(syscall.SIGTERM)
-		return
-	}
-	_ = syscall.Kill(-ctx.ChildPid, syscall.SIGTERM)
+	manager.command.Stdout = os.Stdout
+	manager.command.Stderr = os.Stderr
+	manager.command.Stdin = os.Stdin
+	manager.command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	manager.childExit = make(chan int, 1)
+	return nil
 }
 
-func signalKILL(ctx *runContext) {
-	if ctx.UsingCgroup {
-		if cgroup.HasKillFile(ctx.CgroupPath) {
-			_ = cgroup.Kill(ctx.CgroupPath)
-			return
-		}
-		_ = cgroup.SignalAll(ctx.CgroupPath, unix.SIGKILL)
-		return
+func (manager *executionManager) preparePlatform() {
+	if runtime.GOOS == linuxOSName {
+		manager.initializeCgroup()
 	}
-	if runtime.GOOS == "darwin" && ctx.MacTracker != nil {
-		_ = ctx.MacTracker.SignalAll(syscall.SIGKILL)
-		// Final sweep as belt-and-suspenders.
-		if descendants, _ := proctrack.FallbackDescendants(ctx.MacTracker.RootPid()); len(descendants) > 0 {
-			for _, pid := range descendants {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-		}
-		return
-	}
-	// Generic fallback: kill entire process group, then sweep.
-	_ = syscall.Kill(-ctx.ChildPid, syscall.SIGKILL)
-	if runtime.GOOS == "linux" {
-		if descendants, err := procscan.FindDescendants(ctx.ChildPid); err == nil {
-			for _, pid := range descendants {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-		}
-	} else if runtime.GOOS == "darwin" {
-		if descendants, err := proctrack.FallbackDescendants(ctx.ChildPid); err == nil {
-			for _, pid := range descendants {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-		}
+	if runtime.GOOS == darwinOSName {
+		manager.initializeMacTracker()
 	}
 }
 
-func sleepUntil(deadline time.Time, maxPause time.Duration) {
-	if maxPause <= 0 {
+func (manager *executionManager) initializeCgroup() {
+	available, _ := cgroup.Available()
+	if !available {
 		return
 	}
+	pathValue, createErr := cgroup.CreateUnique()
+	if createErr != nil {
+		manager.logger.Warn(logMessageCgroupCreateFailed, zap.Error(createErr))
+		return
+	}
+	manager.cgroupPath = pathValue
+	manager.usingCgroup = true
+}
+
+func (manager *executionManager) initializeMacTracker() {
+	tracker, trackErr := proctrack.NewKqueueTracker()
+	if trackErr != nil {
+		manager.logger.Warn(logMessageTrackerUnavailable, zap.Error(trackErr))
+		return
+	}
+	manager.macTracker = tracker
+}
+
+func (manager *executionManager) configureCgroupMembership(childPid int) {
+	if !manager.usingCgroup {
+		return
+	}
+	if addErr := cgroup.AddPid(manager.cgroupPath, childPid); addErr != nil {
+		manager.logger.Warn(logMessageCgroupJoinFailed, zap.Error(addErr))
+		manager.usingCgroup = false
+	}
+}
+
+func (manager *executionManager) configureMacTracker(childPid int) {
+	if manager.macTracker == nil {
+		return
+	}
+	if err := manager.macTracker.StartTrackingRoot(childPid); err != nil {
+		manager.logger.Warn(logMessageTrackerStartFailed, zap.Error(err))
+		_ = manager.macTracker.Close()
+		manager.macTracker = nil
+	}
+}
+
+func (manager *executionManager) launchBackgroundRoutines(childPid int) {
+	manager.signalRoutine = newGoroutineCoordinator()
+	go signals.ForwardLoop(signals.ForwardConfig{
+		ChildPid:    childPid,
+		UsingCgroup: manager.usingCgroup,
+		CgroupPath:  manager.cgroupPath,
+		Stop:        manager.signalRoutine.stop,
+		Done:        manager.signalRoutine.done,
+	})
+
+	if runtime.GOOS == linuxOSName && !manager.usingCgroup {
+		routine := newGoroutineCoordinator()
+		manager.scannerRoutine = &routine
+		go procscan.ScannerLoop(procscan.ScannerConfig{
+			RootPid:    childPid,
+			PollPeriod: scannerPollPeriod,
+			Stop:       routine.stop,
+			Done:       routine.done,
+		})
+	}
+}
+
+func (manager *executionManager) stopBackgroundRoutines() {
+	manager.stopRoutine(&manager.signalRoutine)
+	if manager.scannerRoutine != nil {
+		manager.stopRoutine(manager.scannerRoutine)
+		manager.scannerRoutine = nil
+	}
+}
+
+func (manager *executionManager) stopRoutine(routine *goroutineCoordinator) {
+	if routine == nil || routine.stop == nil || routine.done == nil {
+		return
+	}
+	routine.stopWithin(manager.timerFactory, goroutineShutdownGrace)
+	routine.stop = nil
+	routine.done = nil
+}
+
+func (manager *executionManager) captureExitStatus() {
+	waitErr := manager.command.Wait()
+	exitCode := exitcodes.ExitRuntimeError
+	if waitErr == nil {
+		exitCode = exitcodes.ExitSuccess
+	} else if exitError, ok := waitErr.(*exec.ExitError); ok {
+		if status, ok := exitError.Sys().(syscall.WaitStatus); ok {
+			exitCode = status.ExitStatus()
+		}
+	}
+	manager.childExit <- exitCode
+}
+
+func (manager *executionManager) enforceTimeout(childPid int) int {
+	enforcementDeadline := manager.now().Add(manager.options.EnforceWindow)
+
+	manager.sendTerminationSignal(childPid)
+	manager.pauseForGrace(enforcementDeadline)
+	manager.sendKillSignal(childPid)
+	manager.stopBackgroundRoutines()
+
+	remaining := time.Until(enforcementDeadline)
+	if remaining > 0 {
+		timer := manager.timerFactory.NewTimer(remaining)
+		defer timer.Stop()
+
+		select {
+		case <-manager.childExit:
+		case <-timer.C:
+		}
+	}
+	return exitcodes.ExitTimeout
+}
+
+func (manager *executionManager) pauseForGrace(deadline time.Time) {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return
 	}
-	if maxPause > remaining {
-		time.Sleep(remaining)
+	if remaining < enforcementPauseDuration {
+		manager.sleep(remaining)
 		return
 	}
-	time.Sleep(maxPause)
+	manager.sleep(enforcementPauseDuration)
+}
+
+func (manager *executionManager) sendTerminationSignal(childPid int) {
+	if manager.usingCgroup {
+		_ = cgroup.SignalAll(manager.cgroupPath, unix.SIGTERM)
+		return
+	}
+	if runtime.GOOS == darwinOSName && manager.macTracker != nil {
+		_ = manager.macTracker.SignalAll(syscall.SIGTERM)
+		return
+	}
+	_ = syscall.Kill(-childPid, syscall.SIGTERM)
+}
+
+func (manager *executionManager) sendKillSignal(childPid int) {
+	if manager.usingCgroup {
+		if cgroup.HasKillFile(manager.cgroupPath) {
+			_ = cgroup.Kill(manager.cgroupPath)
+			return
+		}
+		_ = cgroup.SignalAll(manager.cgroupPath, unix.SIGKILL)
+		return
+	}
+	if runtime.GOOS == darwinOSName && manager.macTracker != nil {
+		_ = manager.macTracker.SignalAll(syscall.SIGKILL)
+		manager.killMacDescendants(manager.macTracker.RootPid())
+		return
+	}
+	_ = syscall.Kill(-childPid, syscall.SIGKILL)
+	if runtime.GOOS == linuxOSName {
+		manager.killLinuxDescendants(childPid)
+		return
+	}
+	if runtime.GOOS == darwinOSName {
+		manager.killMacDescendants(childPid)
+	}
+}
+
+func (manager *executionManager) killLinuxDescendants(rootPid int) {
+	descendants, err := procscan.FindDescendants(rootPid)
+	if err != nil {
+		return
+	}
+	for _, pid := range descendants {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+func (manager *executionManager) killMacDescendants(rootPid int) {
+	descendants, err := proctrack.FallbackDescendants(rootPid)
+	if err != nil {
+		return
+	}
+	for _, pid := range descendants {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+func (manager *executionManager) cleanupPlatform() {
+	if manager.macTracker != nil {
+		_ = manager.macTracker.Close()
+	}
+	if manager.usingCgroup && manager.cgroupPath != "" {
+		_ = cgroup.Remove(manager.cgroupPath)
+	}
+}
+
+func (manager *executionManager) terminateChildImmediately(childPid int) {
+	manager.sendKillSignal(childPid)
+	manager.stopBackgroundRoutines()
+}
+
+type goroutineCoordinator struct {
+	stop chan struct{}
+	done chan struct{}
+}
+
+func newGoroutineCoordinator() goroutineCoordinator {
+	return goroutineCoordinator{
+		stop: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+}
+
+func (routine goroutineCoordinator) stopWithin(factory timerBuilder, limit time.Duration) {
+	if routine.stop == nil || routine.done == nil {
+		return
+	}
+	select {
+	case <-routine.done:
+		return
+	default:
+	}
+	close(routine.stop)
+	timer := factory.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-routine.done:
+	case <-timer.C:
+	}
 }

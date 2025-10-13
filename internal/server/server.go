@@ -1,32 +1,47 @@
 package server
 
 import (
-	"fmt"
+	"context"
+	"errors"
 	"time"
 
 	"github.com/temirov/gripper/internal/runner"
 	"github.com/temirov/gripper/internal/util/exitcodes"
 )
 
-// RunServerPart is the "server" half of the app. It receives the post-- tail
-// (the command and its arguments) and runs it under a hard timeout.
-//
-// Semantics:
-//   - After exactly timeoutSeconds from process start, termination begins.
-//   - All descendants are guaranteed killed within a fixed 1s enforcement window.
-func RunServerPart(timeoutSeconds int, serverArgs []string) (int, error) {
+const (
+	errTimeoutNotPositive = "timeoutSeconds must be > 0"
+	errCommandMissing     = "missing command after --"
+)
+
+// Service executes commands using the runner package while applying additional validation.
+type Service struct {
+	commandExecutor runner.Executor
+}
+
+// NewService constructs a Service with the default executor.
+func NewService() Service {
+	return Service{commandExecutor: runner.NewExecutor()}
+}
+
+// Run launches the command defined by the server tail under the provided timeout.
+func (service Service) Run(timeoutSeconds int, serverArgs []string) (int, error) {
 	if timeoutSeconds <= 0 {
-		return exitcodes.ExitInvalidUsage, fmt.Errorf("timeoutSeconds must be > 0")
+		return exitcodes.ExitInvalidUsage, errors.New(errTimeoutNotPositive)
 	}
 	if len(serverArgs) == 0 {
-		return exitcodes.ExitInvalidUsage, fmt.Errorf("missing command after --")
+		return exitcodes.ExitInvalidUsage, errors.New(errCommandMissing)
 	}
 
 	options := runner.Options{
 		Timeout:        time.Duration(timeoutSeconds) * time.Second,
 		CommandAndArgs: serverArgs,
-		// EnforceWindow is set to the fixed 1s by runner.
 	}
 
-	return runner.Run(options)
+	return service.commandExecutor.Execute(context.Background(), options)
+}
+
+// RunServerPart delegates to the default Service instance for backwards compatibility.
+func RunServerPart(timeoutSeconds int, serverArgs []string) (int, error) {
+	return NewService().Run(timeoutSeconds, serverArgs)
 }
