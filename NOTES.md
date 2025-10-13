@@ -81,8 +81,8 @@ Leave Features, BugFixes, Improvements, Maintenance sections empty when all fixe
 
 - [X] [GR-01] Prepare a full suite of integration tests with 100% coverage of the code
 - [X] [GR-03] Have complete GDoc code coverage
-- [ ] [GR-06] There should be no logging in this program other than error reporting.
-- [ ] [GR-07] Add github actions to test and build an executable for various platforms. Check similar projects and adapat to this one
+- [X] [GR-06] There should be no logging in this program other than error reporting.
+- [X] [GR-07] Add github actions to test and build an executable for various platforms. Check similar projects and adapat to this one
     ```yaml
     name: Tests
 
@@ -200,7 +200,7 @@ Leave Features, BugFixes, Improvements, Maintenance sections empty when all fixe
     -rw-r--r--@  1 tyemirov  staff  2368 Oct 13 11:06 README.md
     ^Csignal: interrupt
     ```
-- [ ] [GR-04] The program is a complete custerfuck of errors
+- [X] [GR-04] The program is a complete custerfuck of errors
     ```shell
     14:04:53 tyemirov@Vadyms-MacBook-Pro:~/Development/temirov/gripper - [wip] $ go run ./... 10 -- ls -la
     {"level":"warn","ts":1760389551.418806,"caller":"runner/runner.go:241","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 48347: operation not supported"}
@@ -246,7 +246,7 @@ Leave Features, BugFixes, Improvements, Maintenance sections empty when all fixe
     -rw-r--r--@  1 tyemirov  staff  3471 Oct 13 14:04 PLAN.md
     -rw-r--r--@  1 tyemirov  staff  2368 Oct 13 11:06 README.md
     ```
-- [ ] [GR-05] Even the tests are failing
+- [X] [GR-05] Even the tests are failing
     ```shell
     14:05:51 tyemirov@Vadyms-MacBook-Pro:~/Development/temirov/gripper - [wip] $ go fmt ./... && go vet ./... && go test ./...
     ?       github.com/temirov/gripper      [no test files]

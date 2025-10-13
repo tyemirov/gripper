@@ -20,18 +20,17 @@ import (
 )
 
 const (
-	linuxOSName                  = "linux"
-	darwinOSName                 = "darwin"
-	goroutineShutdownGrace       = 500 * time.Millisecond
-	enforcementPauseDuration     = 200 * time.Millisecond
-	scannerPollPeriod            = 150 * time.Millisecond
-	logMessageStartFailed        = "start failed"
-	logMessageCgroupCreateFailed = "cgroup create failed; falling back"
-	logMessageCgroupJoinFailed   = "failed moving pid into cgroup; falling back"
-	logMessageTrackerUnavailable = "kqueue tracker unavailable; falling back"
-	logMessageTrackerStartFailed = "kqueue tracker failed to start; continuing without it"
-	logMessageTimeoutEnforced    = "timeout reached; enforcing window"
-	logFieldEnforcementWindow    = "window"
+	linuxOSName                   = "linux"
+	darwinOSName                  = "darwin"
+	goroutineShutdownGrace        = 500 * time.Millisecond
+	enforcementPauseDuration      = 200 * time.Millisecond
+	scannerPollPeriod             = 150 * time.Millisecond
+	logMessageStartFailed         = "start failed"
+	logMessageCgroupCreateFailed  = "cgroup create failed; falling back"
+	logMessageCgroupJoinFailed    = "failed moving pid into cgroup; falling back"
+	logMessageTrackerUnavailable  = "kqueue tracker unavailable; falling back"
+	logMessageTrackerStartFailed  = "kqueue tracker failed to start; continuing without it"
+	logMessageTrackerCloseDelayed = "mac tracker close did not complete before deadline"
 )
 
 type loggerBuilder interface {
@@ -43,15 +42,24 @@ type timerBuilder interface {
 }
 
 type executionEngine struct {
-	loggerFactory loggerBuilder
-	timerFactory  timerBuilder
-	now           func() time.Time
-	sleep         func(time.Duration)
+	loggerFactory      loggerBuilder
+	timerFactory       timerBuilder
+	macTrackerFactory  MacTrackerFactory
+	macTrackingEnabled bool
+	now                func() time.Time
+	sleep              func(time.Duration)
 }
 
 type zapLoggerFactory struct{}
 
 type systemTimerFactory struct{}
+
+// MacTrackerFactory constructs macOS process trackers.
+type MacTrackerFactory interface {
+	NewTracker() (proctrack.Tracker, error)
+}
+
+type kqueueTrackerFactory struct{}
 
 // Executor exposes the configurable execution engine used by higher layers.
 type Executor struct {
@@ -60,16 +68,33 @@ type Executor struct {
 
 func newExecutionEngine() executionEngine {
 	return executionEngine{
-		loggerFactory: zapLoggerFactory{},
-		timerFactory:  systemTimerFactory{},
-		now:           time.Now,
-		sleep:         time.Sleep,
+		loggerFactory:      zapLoggerFactory{},
+		timerFactory:       systemTimerFactory{},
+		macTrackerFactory:  kqueueTrackerFactory{},
+		macTrackingEnabled: runtime.GOOS == darwinOSName,
+		now:                time.Now,
+		sleep:              time.Sleep,
 	}
 }
 
-// NewExecutor constructs an Executor with the default dependencies.
-func NewExecutor() Executor {
-	return Executor{engine: newExecutionEngine()}
+// ExecutorOption customizes executor construction.
+type ExecutorOption func(*executionEngine)
+
+// WithMacTrackerFactory overrides the macOS tracker factory and forces mac tracking to be enabled.
+func WithMacTrackerFactory(factory MacTrackerFactory) ExecutorOption {
+	return func(engine *executionEngine) {
+		engine.macTrackerFactory = factory
+		engine.macTrackingEnabled = true
+	}
+}
+
+// NewExecutor constructs an Executor with optional dependency overrides.
+func NewExecutor(options ...ExecutorOption) Executor {
+	engine := newExecutionEngine()
+	for _, option := range options {
+		option(&engine)
+	}
+	return Executor{engine: engine}
 }
 
 // Run executes the configured command under a strict timeout and returns the
@@ -97,11 +122,13 @@ func (engine executionEngine) Execute(ctx context.Context, options Options) (int
 	defer logger.Sync()
 
 	manager := executionManager{
-		options:      options,
-		logger:       logger,
-		timerFactory: engine.timerFactory,
-		now:          engine.now,
-		sleep:        engine.sleep,
+		options:        options,
+		logger:         logger,
+		timerFactory:   engine.timerFactory,
+		trackerFactory: engine.macTrackerFactory,
+		macTracking:    engine.macTrackingEnabled,
+		now:            engine.now,
+		sleep:          engine.sleep,
 	}
 
 	return manager.run(ctx)
@@ -120,10 +147,16 @@ func (systemTimerFactory) NewTimer(d time.Duration) *time.Timer {
 	return time.NewTimer(d)
 }
 
+func (kqueueTrackerFactory) NewTracker() (proctrack.Tracker, error) {
+	return proctrack.NewKqueueTracker()
+}
+
 type executionManager struct {
 	options        Options
 	logger         *zap.Logger
 	timerFactory   timerBuilder
+	trackerFactory MacTrackerFactory
+	macTracking    bool
 	now            func() time.Time
 	sleep          func(time.Duration)
 	command        *exec.Cmd
@@ -167,7 +200,6 @@ func (manager *executionManager) run(ctx context.Context) (int, error) {
 	case exitCode := <-manager.childExit:
 		return exitCode, nil
 	case <-timeoutTimer.C:
-		manager.logger.Warn(logMessageTimeoutEnforced, zap.Duration(logFieldEnforcementWindow, manager.options.EnforceWindow))
 		exitCode := manager.enforceTimeout(childPid)
 		return exitCode, nil
 	}
@@ -195,7 +227,7 @@ func (manager *executionManager) preparePlatform() {
 	if runtime.GOOS == linuxOSName {
 		manager.initializeCgroup()
 	}
-	if runtime.GOOS == darwinOSName {
+	if manager.macTracking {
 		manager.initializeMacTracker()
 	}
 }
@@ -207,7 +239,7 @@ func (manager *executionManager) initializeCgroup() {
 	}
 	pathValue, createErr := cgroup.CreateUnique()
 	if createErr != nil {
-		manager.logger.Warn(logMessageCgroupCreateFailed, zap.Error(createErr))
+		manager.logger.Error(logMessageCgroupCreateFailed, zap.Error(createErr))
 		return
 	}
 	manager.cgroupPath = pathValue
@@ -215,9 +247,12 @@ func (manager *executionManager) initializeCgroup() {
 }
 
 func (manager *executionManager) initializeMacTracker() {
-	tracker, trackErr := proctrack.NewKqueueTracker()
+	if manager.trackerFactory == nil {
+		return
+	}
+	tracker, trackErr := manager.trackerFactory.NewTracker()
 	if trackErr != nil {
-		manager.logger.Warn(logMessageTrackerUnavailable, zap.Error(trackErr))
+		manager.logger.Error(logMessageTrackerUnavailable, zap.Error(trackErr))
 		return
 	}
 	manager.macTracker = tracker
@@ -228,7 +263,7 @@ func (manager *executionManager) configureCgroupMembership(childPid int) {
 		return
 	}
 	if addErr := cgroup.AddPid(manager.cgroupPath, childPid); addErr != nil {
-		manager.logger.Warn(logMessageCgroupJoinFailed, zap.Error(addErr))
+		manager.logger.Error(logMessageCgroupJoinFailed, zap.Error(addErr))
 		manager.usingCgroup = false
 	}
 }
@@ -238,9 +273,8 @@ func (manager *executionManager) configureMacTracker(childPid int) {
 		return
 	}
 	if err := manager.macTracker.StartTrackingRoot(childPid); err != nil {
-		manager.logger.Warn(logMessageTrackerStartFailed, zap.Error(err))
-		_ = manager.macTracker.Close()
-		manager.macTracker = nil
+		manager.logger.Error(logMessageTrackerStartFailed, zap.Error(err))
+		manager.shutdownMacTracker()
 	}
 }
 
@@ -386,9 +420,7 @@ func (manager *executionManager) killMacDescendants(rootPid int) {
 }
 
 func (manager *executionManager) cleanupPlatform() {
-	if manager.macTracker != nil {
-		_ = manager.macTracker.Close()
-	}
+	manager.shutdownMacTracker()
 	if manager.usingCgroup && manager.cgroupPath != "" {
 		_ = cgroup.Remove(manager.cgroupPath)
 	}
@@ -397,6 +429,28 @@ func (manager *executionManager) cleanupPlatform() {
 func (manager *executionManager) terminateChildImmediately(childPid int) {
 	manager.sendKillSignal(childPid)
 	manager.stopBackgroundRoutines()
+}
+
+func (manager *executionManager) shutdownMacTracker() {
+	if manager.macTracker == nil {
+		return
+	}
+
+	closeDone := make(chan struct{})
+	go func(tracker proctrack.Tracker) {
+		_ = tracker.Close()
+		close(closeDone)
+	}(manager.macTracker)
+
+	timer := manager.timerFactory.NewTimer(goroutineShutdownGrace)
+	defer timer.Stop()
+
+	select {
+	case <-closeDone:
+	case <-timer.C:
+		manager.logger.Error(logMessageTrackerCloseDelayed)
+	}
+	manager.macTracker = nil
 }
 
 type goroutineCoordinator struct {

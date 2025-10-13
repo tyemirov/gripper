@@ -1,39 +1,40 @@
 # Plan
 
 ## Scope
-- Address open issues GR-01, GR-02, and GR-03 sequentially.
-- Bring existing code into compliance with the repository standards (no inline comments, descriptive identifiers, constants for strings, struct-oriented design).
+- Resolve remaining open issues GR-04, GR-05, GR-06, and GR-07 sequentially, ensuring each fix is introduced with failing tests first.
+- Maintain compliance with repository standards (descriptive identifiers, constants for strings, struct-oriented design, zap logging only for errors).
 
-## Step 1 – Establish test harness (GR-01 prerequisite)
-- Create dedicated integration test package under `internal/tests/integration` to exercise the public CLI surface via the `server` and `runner` packages.
-- Build reusable helpers (struct-oriented) for spawning commands within tests, using table-driven scenarios and `t.TempDir()` for isolation.
-- Define constants for repeated strings and exit codes used in assertions.
+## Status
+- [x] Step 1 – Integration tests reproduce the macOS tracker deadlock before the refactor.
+- [x] Step 2 – Runner and tracker shutdown flows refactored to avoid blocking channel operations.
+- [x] Step 3 – CLI and integration suites stabilized with table-driven tests and deterministic timeouts.
+- [x] Step 4 – Logging limited to error reporting only.
+- [x] Step 5 – GitHub Actions workflow added for formatting, vetting, testing, and cross-platform builds.
+- [x] Step 6 – Final documentation updates and command verifications before merge.
 
-## Step 2 – Reproduce and guard the hang regression (GR-02)
-- Write integration tests that invoke `server.RunServerPart` with trivial commands (`/bin/echo`) to capture the current hang.
-- Extend tests to cover timeout enforcement and descendant termination using a helper program that spawns child processes and reports via files inside `t.TempDir()`.
-- Ensure tests fail under current implementation, confirming the hang and absence of enforcement guarantees.
+## Step 1 – Characterize deadlock regression (GR-04)
+- Extend integration tests under `internal/tests/integration` to reproduce the deadlock reported when executing trivial commands.
+- Build table-driven scenarios covering immediate command completion, timeout paths, and tracker shutdown to demonstrate the blocking behavior.
+- Ensure new tests fail against the current implementation, capturing the hanging behavior.
 
-## Step 3 – Runner refactor to structured executor (GR-02)
-- Introduce a `CommandExecutor` struct in `internal/runner` encapsulating logger, process handles, timers, and helper goroutines.
-- Replace inline comments with GoDoc on exported symbols, and reorganize functionality into cohesive methods (`prepare`, `launch`, `awaitCompletion`, `enforceTimeout`), each leveraging contexts for cancellation.
-- Guarantee goroutine lifecycles are tied to contexts, and ensure all helper channels are drained deterministically to resolve the hang.
-- Continue supporting cgroup/macOS behaviors while simplifying Linux-specific branches via strategy methods.
+## Step 2 – Refactor runner shutdown flow (GR-04)
+- Audit `internal/runner` and related tracker code to identify blocking channel operations.
+- Introduce cohesive structs with method receivers to coordinate tracker lifecycles and goroutine shutdown, ensuring contexts govern cancellation.
+- Replace busy waits or blocking receives with deterministic fan-in using select statements and buffered channels to prevent deadlock.
 
-## Step 4 – Server layer alignment (GR-02, GR-03)
-- Update `internal/server/server.go` to use a struct-oriented API delegating to the new executor, ensuring constants for strings and improved error wrapping.
-- Adjust the CLI glue in `cmd/root.go` to use descriptive constants for help/usage text, convert to struct-based command assembly, and remove inline comments while keeping behavior intact.
+## Step 3 – Stabilize test suite (GR-05)
+- Once the runner fix is in place, update existing tests to use deterministic timeouts and assert on observable behavior rather than implementation details.
+- Add missing unit or integration tests to achieve full coverage of timeout exit codes and server coordination.
 
-## Step 5 – Documentation completeness (GR-03)
-- Audit all exported identifiers across packages (`cmd`, `server`, `runner`, `signals`, `cgroup`, `procscan`, `proctrack`, `util/exitcodes`) and add missing GoDoc comments or elevate existing inline comments to proper documentation blocks.
-- Add a `doc.go` file where package-level context is missing or where large comment blocks should live.
+## Step 4 – Logging discipline (GR-06)
+- Review all packages for non-error logging; replace informational logging with structured error returns or remove unnecessary statements.
+- Ensure remaining logs use zap with error level and descriptive constants.
 
-## Step 6 – Finalize integration suite (GR-01)
-- Expand integration tests to reach 100% code coverage thresholds by covering success path, timeout path, shell execution path, cgroup unavailability, and macOS tracker fallbacks (using stubs/mocks where OS-specific behavior cannot run on Linux).
-- Introduce table-driven tests verifying CLI argument validation separately from execution, ensuring coverage for all usage errors.
-- Confirm tests rely solely on exported behavior, not internal implementation details.
+## Step 5 – Continuous integration workflow (GR-07)
+- Add GitHub Actions workflow under `.github/workflows` to run `go fmt`, `go vet`, and `go test` across supported platforms (Linux, macOS, Windows cross-build) and archive built binaries.
+- Use matrix strategy with caching where applicable and ensure secrets are not required.
 
-## Step 7 – Repository documentation and bookkeeping
-- Update `README.md` (and/or create `MIGRATION.md` if required) to describe the new testing strategy and execution guarantees.
-- Update `NOTES.md` to mark GR-01, GR-02, and GR-03 as completed once corresponding steps are done.
-- Run `go fmt ./...`, `go vet ./...`, and the full test suite under timeouts before committing.
+## Step 6 – Documentation and bookkeeping
+- Update `README.md` and `NOTES.md` to reflect resolved issues and new CI workflow.
+- Confirm `PLAN.md` accurately describes completed work and keep sections aligned with repository standards.
+- Run `timeout 120s go fmt ./...`, `timeout 120s go vet ./...`, and `timeout 120s go test ./...` before final commit.
