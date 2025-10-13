@@ -12,6 +12,7 @@ package proctrack
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
@@ -108,10 +109,13 @@ func (t *KqueueTracker) addProcEvent(pid int) error {
 		Fflags: unix.NOTE_FORK | unix.NOTE_EXEC | unix.NOTE_EXIT | unix.NOTE_TRACK,
 	}
 	_, err := unix.Kevent(t.kqueueFd, []unix.Kevent_t{change}, nil, nil)
-	if err != nil {
-		return fmt.Errorf("kevent add pid %d: %w", pid, err)
+	if err == nil {
+		return nil
 	}
-	return nil
+	if isTrackingUnsupportedError(err) {
+		return errors.Join(ErrTrackingUnsupported, fmt.Errorf("kevent add pid %d: %w", pid, err))
+	}
+	return fmt.Errorf("kevent add pid %d: %w", pid, err)
 }
 
 func (t *KqueueTracker) deleteProcEvent(pid int) {
@@ -122,6 +126,10 @@ func (t *KqueueTracker) deleteProcEvent(pid int) {
 		Fflags: unix.NOTE_FORK | unix.NOTE_EXEC | unix.NOTE_EXIT | unix.NOTE_TRACK,
 	}
 	_, _ = unix.Kevent(t.kqueueFd, []unix.Kevent_t{change}, nil, nil)
+}
+
+func isTrackingUnsupportedError(err error) bool {
+	return errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP)
 }
 
 func (t *KqueueTracker) dispatchLoop() {
