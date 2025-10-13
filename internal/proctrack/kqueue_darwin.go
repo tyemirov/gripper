@@ -85,8 +85,9 @@ func (t *KqueueTracker) SignalAll(sig syscall.Signal) error {
 
 func (t *KqueueTracker) Close() error {
 	close(t.dispatchStop)
+	closeErr := unix.Close(t.kqueueFd)
 	<-t.dispatchStopped
-	return unix.Close(t.kqueueFd)
+	return closeErr
 }
 
 func (t *KqueueTracker) addProcEvent(pid int) error {
