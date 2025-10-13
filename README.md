@@ -91,4 +91,3 @@ The binary `gripper` will be in your `$GOPATH/bin` or `$HOME/go/bin`.
 ## License
 
 MIT License © Vadym Tyemirov
-# gripper
