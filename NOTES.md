@@ -181,6 +181,7 @@ Leave Features, BugFixes, Improvements, Maintenance sections empty when all fixe
             env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     ```
+- [ ] [GR-09] The CI and build pipelines must be separate. Teh CI piepline must react to opening a PR against master, the build pipeline to having a version tag
 
 ### BugFixes
 
@@ -294,4 +295,24 @@ Leave Features, BugFixes, Improvements, Maintenance sections empty when all fixe
     ?       github.com/temirov/gripper/internal/util/exitcodes      [no test files]
     FAIL
     ```
+- [ ] [GR-08] Fix errors: write a test to verify the correctness. if we don't need kqueue on MacOs we shouldnt have used it, if we do, it should ahve worked.
+    ```
+    15:08:46 tyemirov@Vadyms-MacBook-Pro:~/Development/temirov/gripper - [wip] $ go run ./... 10 -- ls -la
+    {"level":"error","ts":1760393333.292462,"caller":"runner/runner.go:276","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 78720: operation not supported","stacktrace":"github.com/temirov/gripper/internal/runner.(*executionManager).configureMacTracker\n\t/Users/tyemirov/Development/temirov/gripper/internal/runner/runner.go:276\ngithub.com/temirov/gripper/internal/runner.(*executionManager).run\n\t/Users/tyemirov/Development/temirov/gripper/internal/runner/runner.go:187\ngithub.com/temirov/gripper/internal/runner.executionEngine.Execute\n\t/Users/tyemirov/Development/temirov/gripper/internal/runner/runner.go:134\ngithub.com/temirov/gripper/internal/runner.Executor.Execute\n\t/Users/tyemirov/Development/temirov/gripper/internal/runner/runner.go:139\ngithub.com/temirov/gripper/internal/server.Service.Run\n\t/Users/tyemirov/Development/temirov/gripper/internal/server/server.go:41\ngithub.com/temirov/gripper/cmd.CLI.run\n\t/Users/tyemirov/Development/temirov/gripper/cmd/root.go:74\ngithub.com/spf13/cobra.(*Command).execute\n\t/Users/tyemirov/go/pkg/mod/github.com/spf13/cobra@v1.8.1/command.go:985\ngithub.com/spf13/cobra.(*Command).ExecuteC\n\t/Users/tyemirov/go/pkg/mod/github.com/spf13/cobra@v1.8.1/command.go:1117\ngithub.com/spf13/cobra.(*Command).Execute\n\t/Users/tyemirov/go/pkg/mod/github.com/spf13/cobra@v1.8.1/command.go:1041\ngithub.com/temirov/gripper/cmd.Execute\n\t/Users/tyemirov/Development/temirov/gripper/cmd/root.go:39\nmain.main\n\t/Users/tyemirov/Development/temirov/gripper/main.go:12\nruntime.main\n\t/usr/local/opt/go/libexec/src/runtime/proc.go:285"}
+    total 80
+    drwxr-xr-x@ 13 tyemirov  staff    416 Oct 13 15:08 .
+    drwxr-xr-x@ 33 tyemirov  staff   1056 Oct 13 10:18 ..
+    drwxr-xr-x@ 14 tyemirov  staff    448 Oct 13 15:08 .git
+    drwxr-xr-x@  3 tyemirov  staff     96 Oct 13 15:08 .github
+    -rw-r--r--@  1 tyemirov  staff   3599 Oct 13 14:04 AGENTS.md
+    drwxr-xr-x@  4 tyemirov  staff    128 Oct 13 15:08 cmd
+    -rw-r--r--@  1 tyemirov  staff    498 Oct 13 14:04 go.mod
+    -rw-r--r--@  1 tyemirov  staff   2229 Oct 13 14:04 go.sum
+    drwxr-xr-x@ 10 tyemirov  staff    320 Oct 13 14:04 internal
+    -rw-r--r--@  1 tyemirov  staff    328 Oct 13 14:04 main.go
+    -rw-r--r--@  1 tyemirov  staff  15495 Oct 13 15:08 NOTES.md
+    -rw-r--r--@  1 tyemirov  staff   2972 Oct 13 15:08 PLAN.md
+    -rw-r--r--@  1 tyemirov  staff   2945 Oct 13 15:08 README.md
+    ```
+
 ### Maintenance
