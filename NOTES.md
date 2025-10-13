@@ -181,7 +181,7 @@ Leave Features, BugFixes, Improvements, Maintenance sections empty when all fixe
             env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     ```
-- [ ] [GR-09] The CI and build pipelines must be separate. Teh CI piepline must react to opening a PR against master, the build pipeline to having a version tag
+- [X] [GR-09] The CI and build pipelines must be separate. Teh CI piepline must react to opening a PR against master, the build pipeline to having a version tag
 
 ### BugFixes
 
