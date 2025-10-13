@@ -81,24 +81,217 @@ Leave Features, BugFixes, Improvements, Maintenance sections empty when all fixe
 
 - [X] [GR-01] Prepare a full suite of integration tests with 100% coverage of the code
 - [X] [GR-03] Have complete GDoc code coverage
+- [ ] [GR-06] There should be no logging in this program other than error reporting.
+- [ ] [GR-07] Add github actions to test and build an executable for various platforms. Check similar projects and adapat to this one
+    ```yaml
+    name: Tests
+
+    on:
+    push:
+        branches:
+        - master
+        paths:
+        - "**/*.js"
+        - "**/*.html"
+        - "**/*.css"
+    pull_request:
+        branches:
+        - master
+        paths:
+        - "**/*.js"
+        - "**/*.html"
+        - "**/*.css"
+
+    jobs:
+    node-tests:
+        runs-on: ubuntu-latest
+        steps:
+        - name: Checkout repository
+            uses: actions/checkout@v4
+
+        - name: Setup Node.js
+            uses: actions/setup-node@v4
+            with:
+            node-version: 22
+
+        - name: Install dependencies
+            run: npm install
+
+        - name: Install browser runtime
+            run: npx puppeteer browsers install chrome
+
+        - name: Run tests
+            run: npm test
+    ```
+    ```yaml
+    name: Release Build
+
+    on:
+    push:
+        tags:
+        - 'v*'
+
+    permissions:
+    contents: write
+
+    jobs:
+    release:
+        runs-on: ubuntu-latest
+
+        steps:
+        - name: CheckoutCode
+            uses: actions/checkout@v4
+
+        - name: SetupGoEnvironment
+            uses: actions/setup-go@v5
+            with:
+            go-version-file: go.mod
+            check-latest: true
+            cache: true
+
+        - name: BuildCTXBinaries
+            run: |
+            mkdir -p dist
+            GOOS=linux   GOARCH=amd64   go build -ldflags="-s -w" -o dist/ctx_linux_amd64   ./cmd/ctx
+            GOOS=darwin  GOARCH=amd64   go build -ldflags="-s -w" -o dist/ctx_darwin_amd64  ./cmd/ctx
+            GOOS=darwin  GOARCH=arm64   go build -ldflags="-s -w" -o dist/ctx_darwin_arm64 ./cmd/ctx
+            GOOS=windows GOARCH=amd64   go build -ldflags="-s -w" -o dist/ctx_windows_amd64.exe ./cmd/ctx
+
+        - name: GenerateChecksums
+            run: |
+            cd dist
+            sha256sum * > checksums.txt
+
+        - name: ExtractReleaseNotes
+            run: |
+            TAG_NAME=${{ github.ref_name }}
+            sed -n "/## \[$TAG_NAME\]/,/\(## \[v[0-9]\)/p" CHANGELOG.md | grep -v '^## \[' > release_notes.md
+
+        - name: CreateGitHubRelease
+            uses: softprops/action-gh-release@v2
+            with:
+            name: "CTX release ${{ github.ref_name }}"
+            body_path: release_notes.md
+            files: |
+                dist/ctx_linux_amd64
+                dist/ctx_darwin_amd64
+                dist/ctx_darwin_arm64
+                dist/ctx_windows_amd64.exe
+                dist/checksums.txt
+            env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    ```
 
 ### BugFixes
 
-- [X] [GR-02] The program hangs when laucnhed on a trivial command.
-```shell
-11:49:15 tyemirov@Vadyms-MacBook-Pro:~/Development/temirov/gripper - [master] $ go run ./... 10 -- ls -la
-{"level":"warn","ts":1760381358.564859,"caller":"runner/runner.go:120","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 55367: operation not supported"}
-total 32
-drwxr-xr-x@  9 tyemirov  staff   288 Oct 13 11:06 .
-drwxr-xr-x@ 33 tyemirov  staff  1056 Oct 13 10:18 ..
-drwxr-xr-x@ 13 tyemirov  staff   416 Oct 13 11:07 .git
-drwxr-xr-x   3 tyemirov  staff    96 Oct 13 10:58 cmd
--rw-r--r--@  1 tyemirov  staff   498 Oct 13 11:03 go.mod
--rw-r--r--@  1 tyemirov  staff  2229 Oct 13 11:03 go.sum
-drwxr-xr-x   9 tyemirov  staff   288 Oct 13 11:44 internal
--rw-r--r--   1 tyemirov  staff   547 Oct 13 10:22 main.go
--rw-r--r--@  1 tyemirov  staff  2368 Oct 13 11:06 README.md
-^Csignal: interrupt
-```
+- [X] [GR-02] The program hangs when launched on a trivial command.
+    ```shell
+    11:49:15 tyemirov@Vadyms-MacBook-Pro:~/Development/temirov/gripper - [master] $ go run ./... 10 -- ls -la
+    {"level":"warn","ts":1760381358.564859,"caller":"runner/runner.go:120","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 55367: operation not supported"}
+    total 32
+    drwxr-xr-x@  9 tyemirov  staff   288 Oct 13 11:06 .
+    drwxr-xr-x@ 33 tyemirov  staff  1056 Oct 13 10:18 ..
+    drwxr-xr-x@ 13 tyemirov  staff   416 Oct 13 11:07 .git
+    drwxr-xr-x   3 tyemirov  staff    96 Oct 13 10:58 cmd
+    -rw-r--r--@  1 tyemirov  staff   498 Oct 13 11:03 go.mod
+    -rw-r--r--@  1 tyemirov  staff  2229 Oct 13 11:03 go.sum
+    drwxr-xr-x   9 tyemirov  staff   288 Oct 13 11:44 internal
+    -rw-r--r--   1 tyemirov  staff   547 Oct 13 10:22 main.go
+    -rw-r--r--@  1 tyemirov  staff  2368 Oct 13 11:06 README.md
+    ^Csignal: interrupt
+    ```
+- [ ] [GR-04] The program is a complete custerfuck of errors
+    ```shell
+    14:04:53 tyemirov@Vadyms-MacBook-Pro:~/Development/temirov/gripper - [wip] $ go run ./... 10 -- ls -la
+    {"level":"warn","ts":1760389551.418806,"caller":"runner/runner.go:241","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 48347: operation not supported"}
+    fatal error: all goroutines are asleep - deadlock!
 
+    goroutine 1 [chan receive]:
+    github.com/temirov/gripper/internal/proctrack.(*KqueueTracker).Close(0xc0000a8380)
+            /Users/tyemirov/Development/temirov/gripper/internal/proctrack/kqueue_darwin.go:88 +0x2c
+    github.com/temirov/gripper/internal/runner.(*executionManager).configureMacTracker(0xc00009a960, 0x1?)
+            /Users/tyemirov/Development/temirov/gripper/internal/runner/runner.go:242 +0x165
+    github.com/temirov/gripper/internal/runner.(*executionManager).run(0xc00009a960, {0xb80b788, 0xbacbf20})
+            /Users/tyemirov/Development/temirov/gripper/internal/runner/runner.go:154 +0x285
+    github.com/temirov/gripper/internal/runner.executionEngine.Execute({{0xb8083f8, 0xbacbf20}, {0xb808418, 0xbacbf20}, 0xb8047b8, 0xb8047c0}, {0xb80b788, 0xbacbf20}, {0x2540be400, 0x3b9aca00, ...})
+            /Users/tyemirov/Development/temirov/gripper/internal/runner/runner.go:107 +0x268
+    github.com/temirov/gripper/internal/runner.Executor.Execute(...)
+            /Users/tyemirov/Development/temirov/gripper/internal/runner/runner.go:112
+    github.com/temirov/gripper/internal/server.Service.Run({{{{0xb8083f8, 0xbacbf20}, {0xb808418, 0xbacbf20}, 0xb8047b8, 0xb8047c0}}}, 0x0?, {0xc00007e320, 0x2, 0x2})
+            /Users/tyemirov/Development/temirov/gripper/internal/server/server.go:41 +0x174
+    github.com/temirov/gripper/cmd.CLI.run({{{{{...}, {...}, 0xb8047b8, 0xb8047c0}}}}, 0x0?, {0xc0000a8240, 0x3, 0x4})
+            /Users/tyemirov/Development/temirov/gripper/cmd/root.go:74 +0x2b9
+    github.com/spf13/cobra.(*Command).execute(0xc0000de008, {0xc000020060, 0x4, 0x4})
+            /Users/tyemirov/go/pkg/mod/github.com/spf13/cobra@v1.8.1/command.go:985 +0xb34
+    github.com/spf13/cobra.(*Command).ExecuteC(0xc0000de008)
+            /Users/tyemirov/go/pkg/mod/github.com/spf13/cobra@v1.8.1/command.go:1117 +0x44f
+    github.com/spf13/cobra.(*Command).Execute(...)
+            /Users/tyemirov/go/pkg/mod/github.com/spf13/cobra@v1.8.1/command.go:1041
+    github.com/temirov/gripper/cmd.Execute()
+            /Users/tyemirov/Development/temirov/gripper/cmd/root.go:39 +0x16a
+    main.main()
+            /Users/tyemirov/Development/temirov/gripper/main.go:12 +0x13
+    exit status 2
+    total 64
+    drwxr-xr-x@ 12 tyemirov  staff   384 Oct 13 14:04 .
+    drwxr-xr-x@ 33 tyemirov  staff  1056 Oct 13 10:18 ..
+    drwxr-xr-x@ 14 tyemirov  staff   448 Oct 13 14:04 .git
+    -rw-r--r--@  1 tyemirov  staff  3599 Oct 13 14:04 AGENTS.md
+    drwxr-xr-x@  4 tyemirov  staff   128 Oct 13 14:04 cmd
+    -rw-r--r--@  1 tyemirov  staff   498 Oct 13 14:04 go.mod
+    -rw-r--r--@  1 tyemirov  staff  2229 Oct 13 14:04 go.sum
+    drwxr-xr-x@ 10 tyemirov  staff   320 Oct 13 14:04 internal
+    -rw-r--r--@  1 tyemirov  staff   328 Oct 13 14:04 main.go
+    -rw-r--r--@  1 tyemirov  staff  5871 Oct 13 14:05 NOTES.md
+    -rw-r--r--@  1 tyemirov  staff  3471 Oct 13 14:04 PLAN.md
+    -rw-r--r--@  1 tyemirov  staff  2368 Oct 13 11:06 README.md
+    ```
+- [ ] [GR-05] Even the tests are failing
+    ```shell
+    14:05:51 tyemirov@Vadyms-MacBook-Pro:~/Development/temirov/gripper - [wip] $ go fmt ./... && go vet ./... && go test ./...
+    ?       github.com/temirov/gripper      [no test files]
+    {"level":"warn","ts":1760389628.07854,"caller":"runner/runner.go:241","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 49551: operation not supported"}
+    {"level":"warn","ts":1760389628.078989,"caller":"runner/runner.go:241","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 49552: operation not supported"}
+    --- FAIL: TestExecuteReturnsForShortCommand (2.00s)
+        root_test.go:41: Execute did not return within 2s
+    --- FAIL: TestExecutePropagatesTimeoutExitCode (2.00s)
+        root_test.go:67: Execute did not return within 2s
+    FAIL
+    FAIL    github.com/temirov/gripper/cmd  5.386s
+    ?       github.com/temirov/gripper/internal/cgroup      [no test files]
+    ?       github.com/temirov/gripper/internal/procscan    [no test files]
+    ?       github.com/temirov/gripper/internal/proctrack   [no test files]
+    ?       github.com/temirov/gripper/internal/runner      [no test files]
+    ?       github.com/temirov/gripper/internal/server      [no test files]
+    ?       github.com/temirov/gripper/internal/signals     [no test files]
+    {"level":"warn","ts":1760389628.432271,"caller":"runner/runner.go:241","msg":"kqueue tracker failed to start; continuing without it","error":"kevent add pid 49553: operation not supported"}
+    integration-echo
+    --- FAIL: TestRunServerPartCompletesWhenCommandFinishes (2.00s)
+        server_test.go:192: RunServerPart did not return within 2s
+        --- FAIL: TestRunServerPartCompletesWhenCommandFinishes/echo_completes_immediately (2.00s)
+    panic: test executed panic(nil) or runtime.Goexit
+
+    goroutine 9 [running]:
+    testing.tRunner.func1.2({0x1f2bc60, 0x2141f00})
+            /usr/local/opt/go/libexec/src/testing/testing.go:1872 +0x237
+    testing.tRunner.func1()
+            /usr/local/opt/go/libexec/src/testing/testing.go:1875 +0x35b
+    runtime.Goexit()
+            /usr/local/opt/go/libexec/src/runtime/panic.go:615 +0x5e
+    testing.(*common).FailNow(0xc000003a40)
+            /usr/local/opt/go/libexec/src/testing/testing.go:1013 +0x4a
+    testing.(*common).Fatalf(0xc000003a40, {0x1eaad12?, 0x1f86680?}, {0xc000106ee8?, 0xc000028630?, 0x1f3c301?})
+            /usr/local/opt/go/libexec/src/testing/testing.go:1219 +0x59
+    github.com/temirov/gripper/internal/tests/integration_test.serverHarness.invoke({0xc00014a1c0?}, 0x2, {0xc0000783c0, 0x2, 0x2})
+            /Users/tyemirov/Development/temirov/gripper/internal/tests/integration/server_test.go:55 +0x17c
+    github.com/temirov/gripper/internal/tests/integration_test.TestRunServerPartCompletesWhenCommandFinishes.func1(0xc00014a1c0)
+            /Users/tyemirov/Development/temirov/gripper/internal/tests/integration/server_test.go:192 +0x4c
+    testing.tRunner(0xc00014a1c0, 0xc000012b80)
+            /usr/local/opt/go/libexec/src/testing/testing.go:1934 +0xea
+    created by testing.(*T).Run in goroutine 7
+            /usr/local/opt/go/libexec/src/testing/testing.go:1997 +0x465
+    FAIL    github.com/temirov/gripper/internal/tests/integration   2.736s
+    ?       github.com/temirov/gripper/internal/util/exitcodes      [no test files]
+    FAIL
+    ```
 ### Maintenance
