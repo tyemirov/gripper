@@ -20,50 +20,54 @@ const (
 	sleepDurationSeconds = "5"
 )
 
-func TestExecuteReturnsForShortCommand(t *testing.T) {
-	t.Parallel()
-
-	originalArgs := os.Args
-	os.Args = []string{cliProgramName, cliTimeoutSeconds, cliSeparatorToken, echoExecutable, echoArgument}
-	defer func() { os.Args = originalArgs }()
-
-	resultChannel := make(chan error, 1)
-	go func() {
-		resultChannel <- cmd.Execute()
-	}()
-
-	select {
-	case execErr := <-resultChannel:
-		if execErr != nil {
-			t.Fatalf("Execute returned error: %v", execErr)
-		}
-	case <-time.After(executeWaitThreshold):
-		t.Fatalf("Execute did not return within %s", executeWaitThreshold)
+func TestExecuteBehavior(t *testing.T) {
+	testCases := []struct {
+		name        string
+		args        []string
+		assertError func(*testing.T, error)
+	}{
+		{
+			name: "short command completes",
+			args: []string{cliProgramName, cliTimeoutSeconds, cliSeparatorToken, echoExecutable, echoArgument},
+			assertError: func(t *testing.T, execErr error) {
+				if execErr != nil {
+					t.Fatalf("Execute returned error: %v", execErr)
+				}
+			},
+		},
+		{
+			name: "timeout propagates exit code",
+			args: []string{cliProgramName, cliTimeoutSeconds, cliSeparatorToken, sleepExecutable, sleepDurationSeconds},
+			assertError: func(t *testing.T, execErr error) {
+				exitError, ok := execErr.(*exitcodes.ExitError)
+				if !ok {
+					t.Fatalf("expected ExitError, received %v", execErr)
+				}
+				if exitError.Code != exitcodes.ExitTimeout {
+					t.Fatalf("unexpected exit code: %d", exitError.Code)
+				}
+			},
+		},
 	}
-}
 
-func TestExecutePropagatesTimeoutExitCode(t *testing.T) {
-	t.Parallel()
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			originalArgs := os.Args
+			os.Args = append([]string(nil), testCase.args...)
+			t.Cleanup(func() { os.Args = originalArgs })
 
-	originalArgs := os.Args
-	os.Args = []string{cliProgramName, cliTimeoutSeconds, cliSeparatorToken, sleepExecutable, sleepDurationSeconds}
-	defer func() { os.Args = originalArgs }()
+			resultChannel := make(chan error, 1)
+			go func() {
+				resultChannel <- cmd.Execute()
+			}()
 
-	resultChannel := make(chan error, 1)
-	go func() {
-		resultChannel <- cmd.Execute()
-	}()
-
-	select {
-	case execErr := <-resultChannel:
-		exitError, ok := execErr.(*exitcodes.ExitError)
-		if !ok {
-			t.Fatalf("expected ExitError, received %v", execErr)
-		}
-		if exitError.Code != exitcodes.ExitTimeout {
-			t.Fatalf("unexpected exit code: %d", exitError.Code)
-		}
-	case <-time.After(executeWaitThreshold):
-		t.Fatalf("Execute did not return within %s", executeWaitThreshold)
+			select {
+			case execErr := <-resultChannel:
+				testCase.assertError(t, execErr)
+			case <-time.After(executeWaitThreshold):
+				t.Fatalf("Execute did not return within %s", executeWaitThreshold)
+			}
+		})
 	}
 }

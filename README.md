@@ -79,6 +79,14 @@ The binary `gripper` will be in your `$GOPATH/bin` or `$HOME/go/bin`.
 
 ---
 
+## Development
+
+- Run the full validation suite locally with `go fmt ./... && go vet ./... && go test ./...`.
+- Integration tests live under `internal/tests/integration` and exercise real process trees, including timeout enforcement and descendant cleanup.
+- Continuous integration runs on GitHub Actions (`.github/workflows/ci.yml`) and cross-compiles binaries for Linux, macOS, and Windows in addition to enforcing formatting, vetting, and tests.
+
+---
+
 ## License
 
 MIT License © Vadym Tyemirov

@@ -30,12 +30,15 @@ type Tracker interface {
 
 // KqueueTracker implements Tracker via BSD kqueue on macOS.
 type KqueueTracker struct {
-	kqueueFd        int
-	rootPid         int
-	mutex           sync.RWMutex
-	trackedPids     map[int]struct{}
-	dispatchStop    chan struct{}
-	dispatchStopped chan struct{}
+	kqueueFd            int
+	rootPid             int
+	mutex               sync.RWMutex
+	stateMutex          sync.Mutex
+	dispatchLoopStarted bool
+	closeOnce           sync.Once
+	trackedPids         map[int]struct{}
+	dispatchStop        chan struct{}
+	dispatchStopped     chan struct{}
 }
 
 // NewKqueueTracker constructs a KqueueTracker. If kqueue creation fails,
@@ -64,7 +67,7 @@ func (t *KqueueTracker) StartTrackingRoot(rootPid int) error {
 	if err := t.addProcEvent(rootPid); err != nil {
 		return err
 	}
-	go t.dispatchLoop()
+	t.launchDispatchLoop()
 	return nil
 }
 
@@ -84,9 +87,16 @@ func (t *KqueueTracker) SignalAll(sig syscall.Signal) error {
 }
 
 func (t *KqueueTracker) Close() error {
-	close(t.dispatchStop)
-	closeErr := unix.Close(t.kqueueFd)
-	<-t.dispatchStopped
+	var closeErr error
+	t.closeOnce.Do(func() {
+		close(t.dispatchStop)
+		closeErr = unix.Close(t.kqueueFd)
+		if t.dispatchLoopHasStarted() {
+			<-t.dispatchStopped
+		} else {
+			close(t.dispatchStopped)
+		}
+	})
 	return closeErr
 }
 
@@ -148,6 +158,24 @@ func (t *KqueueTracker) dispatchLoop() {
 			}
 		}
 	}
+}
+
+func (t *KqueueTracker) launchDispatchLoop() {
+	t.stateMutex.Lock()
+	if t.dispatchLoopStarted {
+		t.stateMutex.Unlock()
+		return
+	}
+	t.dispatchLoopStarted = true
+	t.stateMutex.Unlock()
+	go t.dispatchLoop()
+}
+
+func (t *KqueueTracker) dispatchLoopHasStarted() bool {
+	t.stateMutex.Lock()
+	started := t.dispatchLoopStarted
+	t.stateMutex.Unlock()
+	return started
 }
 
 // FallbackDescendants performs a best-effort descendant listing using `ps`.
