@@ -148,21 +148,32 @@ func (t *KqueueTracker) dispatchLoop() {
 		}
 		for i := 0; i < n; i++ {
 			kev := events[i]
-			pid := int(kev.Ident)
+			parentPid := int(kev.Ident)
 			flags := kev.Fflags
 
 			if flags&unix.NOTE_EXIT != 0 {
 				t.mutex.Lock()
-				delete(t.trackedPids, pid)
+				delete(t.trackedPids, parentPid)
 				t.mutex.Unlock()
-				t.deleteProcEvent(pid)
+				t.deleteProcEvent(parentPid)
 				continue
 			}
-			if flags&unix.NOTE_FORK != 0 || flags&unix.NOTE_TRACK != 0 || flags&unix.NOTE_EXEC != 0 {
+
+			if flags&unix.NOTE_FORK != 0 || flags&unix.NOTE_TRACK != 0 {
+				childPid := int(kev.Data)
+				if childPid != 0 {
+					t.mutex.Lock()
+					t.trackedPids[childPid] = struct{}{}
+					t.mutex.Unlock()
+					_ = t.addProcEvent(childPid)
+				}
+			}
+
+			if flags&unix.NOTE_EXEC != 0 {
 				t.mutex.Lock()
-				t.trackedPids[pid] = struct{}{}
+				t.trackedPids[parentPid] = struct{}{}
 				t.mutex.Unlock()
-				_ = t.addProcEvent(pid)
+				_ = t.addProcEvent(parentPid)
 			}
 		}
 	}
