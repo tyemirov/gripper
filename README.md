@@ -1,25 +1,23 @@
 # gripper
 
-`gripper` is a small and uncompromising utility: it runs a command and guarantees that **after N seconds** the command, all its children, and all associated resources (open files, sockets, subprocesses) are terminated.
+`gripper` is a precise timeout enforcer: run a command and know that after **N seconds** the entire process tree is gone—children, file descriptors, sockets, everything.
 
-Think of it as a **grim reaper with precision timing** — reliable on Unix-like platforms and strict.
+Think of it as a grim reaper carrying a stopwatch: deterministic cleanup across Unix-like systems.
 
 ---
 
 ## Why `gripper`?
 
-Most timeouts in shells, CI systems, or programming libraries are _advisory_: they may leave orphaned processes, open file descriptors, or zombie subprocesses.
+Most timeouts in shells, CI jobs, or libraries are only advisory and frequently leave orphaned processes or open descriptors behind.
 
 `gripper` is different:
 
-- **Hard guarantee:** after `N` seconds, the command is gone. Not “maybe gone,” not “cleaned up later.”
-- **Supported platforms:**
-
-  - **Linux:** Uses cgroup v2 `cgroup.kill` when available (atomic kill).
-  - **macOS:** Uses BSD `kqueue` process tracking to follow forks/execs.
-  - **Windows:** Not supported. The process control mechanisms required by `gripper` are not available on Windows today.
-
-- **Fast enforcement:** grace time is internal and capped at 1 second. At most, there’s a one-second window between timeout and full termination.
+- **Hard cutoff:** once the deadline hits, the entire command tree is eliminated. No lingering subprocesses, no surprise cleanup tasks later.
+- **Cross-platform guarantees:**
+  - **Linux:** leverages cgroup v2 `cgroup.kill` for atomic, whole-tree termination.
+  - **macOS:** follows forks and execs through BSD `kqueue` tracking so nothing escapes.
+  - **Windows:** not supported because the necessary process-control primitives are unavailable.
+- **Fast enforcement:** the internal grace period is capped at one second, so the kill happens almost immediately after timeout.
 
 ---
 
