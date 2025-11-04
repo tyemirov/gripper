@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/temirov/gripper/internal/cgroup"
+	"github.com/tyemirov/gripper/internal/cgroup"
 )
 
 type ForwardConfig struct {

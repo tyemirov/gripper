@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/temirov/gripper/internal/cgroup"
-	"github.com/temirov/gripper/internal/procscan"
-	"github.com/temirov/gripper/internal/proctrack"
-	"github.com/temirov/gripper/internal/signals"
-	"github.com/temirov/gripper/internal/util/exitcodes"
+	"github.com/tyemirov/gripper/internal/cgroup"
+	"github.com/tyemirov/gripper/internal/procscan"
+	"github.com/tyemirov/gripper/internal/proctrack"
+	"github.com/tyemirov/gripper/internal/signals"
+	"github.com/tyemirov/gripper/internal/util/exitcodes"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 )

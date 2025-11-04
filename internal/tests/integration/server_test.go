@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/temirov/gripper/internal/server"
-	"github.com/temirov/gripper/internal/util/exitcodes"
+	"github.com/tyemirov/gripper/internal/server"
+	"github.com/tyemirov/gripper/internal/util/exitcodes"
 )
 
 const (

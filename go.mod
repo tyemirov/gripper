@@ -1,4 +1,4 @@
-module github.com/temirov/gripper
+module github.com/tyemirov/gripper
 
 go 1.22
 

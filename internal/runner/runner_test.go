@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/temirov/gripper/internal/proctrack"
-	"github.com/temirov/gripper/internal/runner"
-	"github.com/temirov/gripper/internal/util/exitcodes"
+	"github.com/tyemirov/gripper/internal/proctrack"
+	"github.com/tyemirov/gripper/internal/runner"
+	"github.com/tyemirov/gripper/internal/util/exitcodes"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
