@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/temirov/gripper/internal/runner"
-	"github.com/temirov/gripper/internal/util/exitcodes"
+	"github.com/tyemirov/gripper/internal/runner"
+	"github.com/tyemirov/gripper/internal/util/exitcodes"
 )
 
 const (

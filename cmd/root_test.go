@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/temirov/gripper/cmd"
-	"github.com/temirov/gripper/internal/util/exitcodes"
+	"github.com/tyemirov/gripper/cmd"
+	"github.com/tyemirov/gripper/internal/util/exitcodes"
 )
 
 const (
